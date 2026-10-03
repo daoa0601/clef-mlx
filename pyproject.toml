@@ -1,0 +1,33 @@
+[project]
+name = "clef-mlx"
+version = "0.1.0"
+description = "Run Cloudflare Clef / Clef-Flash decision models on Apple silicon with MLX"
+readme = "README.md"
+authors = [
+    { name = "Anh Dao", email = "anhdd2000@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "huggingface-hub>=1.33.0",
+    "mlx>=0.32",
+    "mlx-lm>=0.32",
+    "numpy>=2.5.3",
+    "safetensors>=0.8.0",
+    "transformers>=5.18.0",
+]
+
+[project.scripts]
+clef-mlx = "clef_mlx.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "accelerate>=1.15.0",
+    "pillow>=12.3.0",
+    "pytest>=9.1.1",
+    "torch>=2.14.1",
+    "torchvision>=0.29.1",
+]
