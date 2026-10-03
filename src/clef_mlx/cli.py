@@ -18,8 +18,11 @@ def main(argv: list[str] | None = None) -> None:
     convert_parser.add_argument("--bits", type=int, default=8)
     convert_parser.add_argument("--group-size", type=int, default=64)
     convert_parser.add_argument("--quantize-lm-head", action="store_true")
+    convert_parser.add_argument("--text-only", action="store_true", help="drop the vision tower (uses mlx-lm)")
 
-    run_parser = commands.add_parser("run", help="answer a /v1/systemone request body (JSON file or stdin)")
+    run_parser = commands.add_parser(
+        "run", help="answer a /v1/systemone request body (JSON file or stdin); images are file paths"
+    )
     run_parser.add_argument("--model", default="Cloudflare/clef-flash")
     run_parser.add_argument("request", nargs="?", help="request JSON path; reads stdin when omitted")
 
@@ -28,12 +31,17 @@ def main(argv: list[str] | None = None) -> None:
     from .model import convert, load
 
     if args.command == "convert":
-        out = convert(args.model, args.out, args.bits, args.group_size, args.quantize_lm_head)
+        vision = False if args.text_only else None
+        out = convert(args.model, args.out, args.bits, args.group_size, args.quantize_lm_head, vision=vision)
         print(f"wrote {out}")
         return
 
     request = json.load(open(args.request) if args.request else sys.stdin)
     request.setdefault("model", args.model)
+    if request.get("images"):
+        from PIL import Image  # JSON carries image file paths; the model takes PIL images
+
+        request["images"] = [Image.open(image).convert("RGB") for image in request["images"]]
     clef = load(args.model)
     start = time.perf_counter()
     response = clef.systemone(request)

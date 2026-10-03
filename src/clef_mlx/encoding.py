@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
+
+import numpy as np
 
 SYSTEM_PROMPT = (
     "Read the complete state and schema. Decide every field jointly. Each answer "
     "must be exactly one of that field's allowed options."
 )
+IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
+MEDIA_KEYS = ("pixel_values", "image_grid_thw")
 QUESTION_TYPES = {"noul": 0, "choice": 1, "score": 2}
 
 
@@ -51,10 +56,33 @@ class EncodedRecord:
     input_ids: tuple[int, ...]
     questions: tuple[EncodedQuestion, ...]
     record_id: str
+    media: dict[str, np.ndarray] | None = dataclass_field(default=None, compare=False, repr=False)
 
 
 def _tokens(tokenizer: Any, text: str) -> list[int]:
     return tokenizer(text, add_special_tokens=False).input_ids
+
+
+def _encode_media(processor: Any, record: dict[str, Any]) -> tuple[list[int], dict[str, np.ndarray] | None]:
+    """Expand one placeholder per image into image-pad tokens and return the pixel inputs."""
+    if record.get("videos"):
+        raise NotImplementedError("clef-mlx does not support video inputs yet")
+    images = list(record.get("images") or [])
+    if not images:
+        return [], None
+    if processor is None:
+        raise ValueError(
+            "records with images need a vision backbone: install clef-mlx[vision] and load a release "
+            "or a checkpoint converted without --text-only"
+        )
+    encoded = processor(
+        text=[IMAGE_PLACEHOLDER * len(images) + "\n"],
+        images=images,
+        return_tensors="np",
+        **(record.get("media_kwargs") or {}),
+    )
+    media = {key: np.asarray(encoded[key]) for key in MEDIA_KEYS}
+    return np.asarray(encoded["input_ids"])[0].tolist(), media
 
 
 def encode_record(
@@ -62,10 +90,8 @@ def encode_record(
     record: dict[str, Any],
     max_length: int = 16384,
     max_state_tokens: int | None = None,
+    processor: Any | None = None,
 ) -> EncodedRecord:
-    if record.get("images") or record.get("videos"):
-        raise NotImplementedError("clef-mlx supports text-only records; images and videos are not ported")
-
     schema_ids = _tokens(tokenizer, "\n\nSCHEMA FIELDS:\n")
     questions: list[EncodedQuestion] = []
     for question_index, (question_id, question) in enumerate(record["questions"].items()):
@@ -114,6 +140,8 @@ def encode_record(
         tokenizer,
         "\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nJOINT SCHEMA DECISIONS:",
     )
+    media_ids, media = _encode_media(processor, record)
+    prefix_ids = prefix_ids + media_ids
     state_ids = _tokens(tokenizer, render(record["state"]))
     if max_state_tokens is not None:
         state_ids = state_ids[:max_state_tokens]
@@ -135,4 +163,6 @@ def encode_record(
     input_ids = tuple(prefix_ids + state_ids + schema_ids + suffix_ids)
     if not input_ids or not shifted:
         raise ValueError("record produced no model input or questions")
-    return EncodedRecord(input_ids=input_ids, questions=shifted, record_id=str(record.get("id", "unknown")))
+    return EncodedRecord(
+        input_ids=input_ids, questions=shifted, record_id=str(record.get("id", "unknown")), media=media
+    )

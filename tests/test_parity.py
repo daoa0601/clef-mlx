@@ -1,7 +1,8 @@
 """Parity against the PyTorch reference shipped in the release (``joint_schema_model.py``).
 
 Needs the release files in the HF cache (``hf download Cloudflare/clef-flash``) and torch
-(dev dependency). The backbone is not exercised here; see ``scripts/compare_backbone.py``.
+(dev dependency); the image test also needs the ``vision`` extra. The backbone is not exercised
+here; see ``scripts/compare_backbone.py``.
 """
 
 from __future__ import annotations
@@ -78,6 +79,38 @@ def test_encoding_matches_reference(release, record):
     assert [dataclasses.astuple(q) for q in actual.questions] == [
         dataclasses.astuple(q) for q in expected.questions
     ]
+
+
+def test_image_encoding_matches_reference(release):
+    """mlx-vlm's torch-free processor must produce the reference's tokens, spans and pixels."""
+    pytest.importorskip("mlx_vlm")
+    from PIL import Image, ImageDraw
+    from transformers import AutoProcessor
+
+    from mlx_vlm.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
+
+    path, reference, _ = release
+    wide = Image.new("RGB", (517, 389), (40, 70, 200))
+    ImageDraw.Draw(wide).ellipse([140, 80, 380, 320], fill=(220, 30, 30))
+    tall = Image.new("RGB", (300, 700), "white")
+    ImageDraw.Draw(tall).text((20, 20), "TOTAL $17.49", fill="black")
+    record = {**RECORDS[0], "images": [wide, tall]}
+
+    hf_processor = AutoProcessor.from_pretrained(path)
+    expected = reference.encode_record(hf_processor.tokenizer, record, processor=hf_processor)
+    ours = Qwen3VLProcessor.from_pretrained(path)
+    actual = encode_record(ours.tokenizer, record, processor=ours)
+
+    assert actual.input_ids == expected.input_ids
+    assert [dataclasses.astuple(q) for q in actual.questions] == [
+        dataclasses.astuple(q) for q in expected.questions
+    ]
+    np.testing.assert_array_equal(actual.media["image_grid_thw"], expected.media["image_grid_thw"].numpy())
+    # PIL (mlx-vlm) and torchvision (HF) resizes round a handful of pixels differently: allow
+    # one 8-bit level after normalization (2/255) on a tiny fraction of values.
+    diff = np.abs(actual.media["pixel_values"] - expected.media["pixel_values"].float().numpy())
+    assert diff.max() <= 2 / 255 + 1e-6
+    assert (diff > 1e-6).mean() < 1e-4
 
 
 @pytest.mark.parametrize("record", RECORDS)

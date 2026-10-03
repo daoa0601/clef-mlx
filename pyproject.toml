@@ -21,6 +21,12 @@ dependencies = [
 [project.scripts]
 clef-mlx = "clef_mlx.cli:main"
 
+[project.optional-dependencies]
+vision = [
+    "mlx-vlm>=0.7.4",
+    "pillow>=10.3",
+]
+
 [build-system]
 requires = ["uv_build>=0.9.5,<0.10.0"]
 build-backend = "uv_build"
