@@ -1,4 +1,4 @@
-"""Load Clef / Clef-Flash on MLX and answer typed questions."""
+"""Load Clef / Clef-Flash on MLX and score the options of typed questions."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer
 
 from .backbone import TextBackbone, VisionBackbone, has_vision_weights
-from .encoding import QUESTION_TYPES, EncodedRecord, encode_record
+from .encoding import EncodedRecord, encode_record
 from .head import JointSchemaHead
 
 HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
@@ -80,60 +80,17 @@ class Clef:
         mx.eval(logits)
         return logits
 
-    def probabilities(self, record: dict[str, Any], **kwargs: Any) -> dict[str, dict[str, float]]:
-        encoded = self.encode(record, **kwargs)
+    def option_probabilities(self, encoded: EncodedRecord) -> dict[str, dict[str, float]]:
+        """``{question_id: {option_id: p}}`` for an encoded record, one softmax per question."""
         return {
-            question.question_id: dict(zip(question.option_ids, mx.softmax(logits, axis=-1).tolist()))
-            for question, logits in zip(encoded.questions, self.logits(encoded))
-        }
-
-    def systemone(self, request: dict[str, Any], max_length: int = 16384) -> dict[str, Any]:
-        """Answer a Jev/SystemOne ``/v1/systemone`` request body; ``images`` are PIL images."""
-        questions = request.get("questions")
-        if not isinstance(request.get("model"), str) or "state" not in request:
-            raise ValueError("model and state are required")
-        if not isinstance(questions, dict) or not questions:
-            raise ValueError("at least one question is required")
-        for question_id, question in questions.items():
-            if question.get("type") not in QUESTION_TYPES:
-                raise ValueError(f"{question_id}: type must be noul, choice, or score")
-            if question["type"] != "noul" and not question.get("criteria"):
-                raise ValueError(f"{question_id}: criteria must not be empty")
-        encoded = self.encode(request, max_length=max_length)
-        answers = {
-            question.question_id: systemone_answer(
-                questions[question.question_id],
-                dict(zip(question.option_ids, mx.softmax(logits.astype(mx.float32), axis=-1).tolist())),
+            question.question_id: dict(
+                zip(question.option_ids, mx.softmax(logits.astype(mx.float32), axis=-1).tolist())
             )
             for question, logits in zip(encoded.questions, self.logits(encoded))
         }
-        return {
-            "model": request["model"],
-            "answers": answers,
-            "usage": {"input_tokens": len(encoded.input_ids), "output_tokens": 0},
-        }
 
-
-def systemone_answer(question: dict[str, Any], probabilities: dict[str, float]) -> dict[str, Any]:
-    if question["type"] == "noul":
-        return {"type": "noul", "noul": round(probabilities["true"], 4)}
-    if question["type"] == "choice":
-        options = [str(option) for option in question["criteria"]]
-        choice = max(options, key=probabilities.__getitem__)
-        return {
-            "type": "choice",
-            "choice": choice,
-            "confidence": round(probabilities[choice], 4),
-            "probabilities": {option: round(probabilities[option], 4) for option in options},
-        }
-    levels = [str(index) for index in range(len(question["criteria"]))]
-    return {
-        "type": "score",
-        "score": round(sum(index * probabilities[level] for index, level in enumerate(levels)), 4),
-        "confidence": round(max(probabilities[level] for level in levels), 4),
-        "legend": dict(zip(levels, question["criteria"])),
-        "probabilities": {level: round(probabilities[level], 4) for level in levels},
-    }
+    def probabilities(self, record: dict[str, Any], **kwargs: Any) -> dict[str, dict[str, float]]:
+        return self.option_probabilities(self.encode(record, **kwargs))
 
 
 def load(path_or_repo: str | Path, lazy: bool = False, vision: bool | None = None) -> Clef:

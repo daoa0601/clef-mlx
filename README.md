@@ -28,8 +28,7 @@ from PIL import Image
 from clef_mlx import load
 
 clef = load("Cloudflare/clef-flash")   # HF repo id, release dir, or a converted dir
-print(clef.systemone({
-    "model": "clef-flash",
+print(clef.probabilities({
     "state": "Our checkout started returning errors and orders are blocked.",
     "questions": {
         "department": {"type": "choice", "instructions": "Which team should handle the message?",
@@ -48,9 +47,12 @@ print(clef.probabilities({
 
 `load` picks the vision backbone automatically when the checkpoint has vision weights and the
 `vision` extra is installed; pass `vision=False` to force the lighter text backbone.
-`clef.probabilities(record)` returns `{question_id: {option_id: p}}` for the release's record format.
+`clef.probabilities(record)` returns `{question_id: {option_id: p}}` for the release's record format
+(`true`/`false` for `noul`, the option names for `choice`, `0`, `1`, ... for `score`).
+`clef.encode(record)` followed by `clef.option_probabilities(encoded)` gives the same and keeps the
+encoded record, for example to count its input tokens.
 
-CLI (in request JSON, `images` are file paths):
+CLI (in record JSON, `images` are file paths); it prints the probabilities and the input token count:
 
 ```bash
 echo '{"state": "Expense check", "images": ["receipt.png"],
@@ -71,7 +73,7 @@ bf16 release first (about 54 GB on disk):
 ```bash
 uv run clef-mlx convert --model Cloudflare/clef --out ./clef-8bit               # 8-bit, keeps vision
 uv run clef-mlx convert --model Cloudflare/clef --out ./clef-8bit --text-only   # mlx-lm, no vision
-uv run clef-mlx run --model ./clef-8bit request.json
+uv run clef-mlx run --model ./clef-8bit record.json
 ```
 
 `convert` quantizes the language model, keeps the vision tower and the LM head in bf16 (the joint

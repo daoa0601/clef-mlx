@@ -5,3 +5,4 @@ __pycache__/
 *-4bit/
 *-8bit/
 .env
+.DS_Store
