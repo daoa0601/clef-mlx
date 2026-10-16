@@ -1,4 +1,4 @@
-"""``clef-mlx`` command line: convert a release to quantized MLX, or answer a SystemOne request."""
+"""``clef-mlx`` command line: convert a release to quantized MLX, or score one record's options."""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ def main(argv: list[str] | None = None) -> None:
     convert_parser.add_argument("--text-only", action="store_true", help="drop the vision tower (uses mlx-lm)")
 
     run_parser = commands.add_parser(
-        "run", help="answer a /v1/systemone request body (JSON file or stdin); images are file paths"
+        "run", help="print a record's option probabilities (JSON file or stdin); images are file paths"
     )
     run_parser.add_argument("--model", default="Cloudflare/clef-flash")
-    run_parser.add_argument("request", nargs="?", help="request JSON path; reads stdin when omitted")
+    run_parser.add_argument("record", nargs="?", help="record JSON path; reads stdin when omitted")
 
     args = parser.parse_args(argv)
 
@@ -36,17 +36,17 @@ def main(argv: list[str] | None = None) -> None:
         print(f"wrote {out}")
         return
 
-    request = json.load(open(args.request) if args.request else sys.stdin)
-    request.setdefault("model", args.model)
-    if request.get("images"):
+    record = json.load(open(args.record) if args.record else sys.stdin)
+    if record.get("images"):
         from PIL import Image  # JSON carries image file paths; the model takes PIL images
 
-        request["images"] = [Image.open(image).convert("RGB") for image in request["images"]]
+        record["images"] = [Image.open(image).convert("RGB") for image in record["images"]]
     clef = load(args.model)
     start = time.perf_counter()
-    response = clef.systemone(request)
-    response["usage"]["latency_ms"] = round((time.perf_counter() - start) * 1000, 1)
-    print(json.dumps(response, indent=2))
+    encoded = clef.encode(record)
+    probabilities = clef.option_probabilities(encoded)
+    usage = {"input_tokens": len(encoded.input_ids), "latency_ms": round((time.perf_counter() - start) * 1000, 1)}
+    print(json.dumps({"probabilities": probabilities, "usage": usage}, indent=2))
 
 
 if __name__ == "__main__":
