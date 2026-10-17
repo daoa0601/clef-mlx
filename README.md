@@ -77,9 +77,12 @@ uv run clef-mlx run --model ./clef-8bit record.json
 ```
 
 `convert` quantizes the language model, keeps the vision tower and the LM head in bf16 (the joint
-head reads LM head rows directly as option features), and copies the joint head and the release's
-processor config next to the backbone. It goes through mlx-vlm when the `vision` extra is installed
-and through mlx-lm with `--text-only`. 8-bit is the default because on Clef-Flash it is
+head reads LM head rows directly as option features), and writes only the backbone plus
+`clef_release.json`, which names the release (repo id and commit, or a local path). The joint head,
+tokenizer, and processor config are always read from that release, so every quantization of a model
+shares one copy; loading a converted checkpoint fetches just those files (~265 MB), not the bf16
+backbone. It goes through mlx-vlm when the `vision` extra is installed and through mlx-lm with
+`--text-only`. 8-bit is the default because on Clef-Flash it is
 indistinguishable from bf16 (below); `--bits 4` works but moves borderline probabilities by a few
 points.
 

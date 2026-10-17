@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -18,7 +19,18 @@ from .backbone import TextBackbone, VisionBackbone, has_vision_weights
 from .encoding import EncodedRecord, encode_record
 from .head import JointSchemaHead
 
-HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
+# A converted checkpoint is only the quantized backbone plus this pointer to its release, which is
+# the one source of the joint head and the tokenizer/processor for every quantization of it.
+RELEASE_POINTER = "clef_release.json"
+BACKBONE_FILES = ("config.json", "model*.safetensors", "model.safetensors.index.json")
+PROCESSING_FILES = [
+    "joint_head.safetensors",
+    "joint_head_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+    "processor_config.json",
+]
 
 
 def resolve(path_or_repo: str | Path) -> Path:
@@ -27,6 +39,30 @@ def resolve(path_or_repo: str | Path) -> Path:
         return path
     # Skip the PyTorch helper; everything else (backbone, head, tokenizer) is needed.
     return Path(snapshot_download(str(path_or_repo), ignore_patterns=["*.py"]))
+
+
+def release_dir(path: Path) -> Path:
+    """The directory holding the joint head and processing files for the checkpoint at ``path``.
+
+    That is ``path`` itself for a release, or the release a converted backbone points to; from the
+    hub only the processing files are fetched, not the bf16 backbone.
+    """
+    pointer = path / RELEASE_POINTER
+    if not pointer.exists():
+        return path
+    release = json.loads(pointer.read_text())
+    if "revision" not in release:
+        return Path(release["release"])
+    return Path(
+        snapshot_download(release["release"], revision=release["revision"], allow_patterns=PROCESSING_FILES)
+    )
+
+
+def _release_pointer(path_or_repo: str | Path, source: Path) -> dict[str, str]:
+    if Path(path_or_repo).is_dir():
+        return {"release": str(source.resolve())}
+    # ``snapshot_download`` returns ``.../snapshots/<commit>``, which pins the release.
+    return {"release": str(path_or_repo), "revision": source.name}
 
 
 def _writable_view(source: Path, staging: Path) -> Path:
@@ -100,17 +136,18 @@ def load(path_or_repo: str | Path, lazy: bool = False, vision: bool | None = Non
     extra (mlx-vlm) is installed; ``False`` forces the lighter text-only mlx-lm backbone.
     """
     path = resolve(path_or_repo)
-    head = JointSchemaHead.from_release(path)
+    release = release_dir(path)
+    head = JointSchemaHead.from_release(release)
     if vision is None:
         vision = vision_available() and has_vision_weights(path)
     if not vision:
-        return Clef(TextBackbone(path, lazy), head, AutoTokenizer.from_pretrained(path))
+        return Clef(TextBackbone(path, lazy), head, AutoTokenizer.from_pretrained(release))
     if not has_vision_weights(path):
         raise ValueError(f"{path} has no vision weights; it was converted text-only")
     # mlx-vlm's numpy port of the Qwen3-VL processor: same tokens and pixels as HF, no torch.
     from mlx_vlm.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
 
-    processor = Qwen3VLProcessor.from_pretrained(str(path))
+    processor = Qwen3VLProcessor.from_pretrained(str(release))
     return Clef(VisionBackbone(path, lazy), head, processor.tokenizer, processor)
 
 
@@ -122,7 +159,7 @@ def convert(
     quantize_lm_head: bool = False,
     vision: bool | None = None,
 ) -> Path:
-    """Quantize the backbone and copy the joint head next to it.
+    """Quantize the backbone and write it with a pointer to the release (see :func:`release_dir`).
 
     With vision (the default when mlx-vlm is installed) the conversion goes through mlx-vlm and
     keeps the vision tower in bf16; otherwise mlx-lm writes a smaller text-only checkpoint. The
@@ -163,8 +200,10 @@ def convert(
             q_group_size=group_size,
             quant_predicate=lambda p, _m, *_: not keep_lm_head(p),
         )
-    # The head, plus the release's processor config (mlx-vlm rewrites it with its own video defaults).
-    for name in (*HEAD_FILES, "processor_config.json"):
-        if (source / name).exists():
-            shutil.copyfile(source / name, mlx_path / name)
+    # Drop the tokenizer and processor files the converters write; they are read from the release.
+    backbone = {file for pattern in BACKBONE_FILES for file in mlx_path.glob(pattern)}
+    for file in mlx_path.iterdir():
+        if file not in backbone:
+            file.unlink()
+    (mlx_path / RELEASE_POINTER).write_text(json.dumps(_release_pointer(path_or_repo, source), indent=2) + "\n")
     return mlx_path
